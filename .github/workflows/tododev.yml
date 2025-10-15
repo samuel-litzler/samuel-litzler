@@ -1,20 +1,120 @@
-name: Work Stats Readme
+name: WakaTime Calendar
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 * * *"
+    - cron: "0 0 * * *"   # Tous les jours à 00:00 UTC
 
 jobs:
-  update-readme:
+  build-calendar:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: athul/waka-readme@master
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
+          python-version: "3.x"
+
+      - name: Install deps
+        run: |
+          python - << 'PY'
+          # rien à installer : on écrit le script dans le step suivant
+          PY
+
+      - name: Generate WakaTime calendar SVG (last 365 days)
+        env:
           WAKATIME_API_KEY: ${{ secrets.WAKATIME_API_KEY }}
-      - uses: athul/waka-readme-stats@master
-        with:
-          WAKATIME_API_KEY: ${{ secrets.WAKATIME_API_KEY }}
-          SHOW_TIMEZONE: "true"
-          SHOW_DAYS_OF_WEEK: "true"
-          SHOW_TOTAL: "true"
+        run: |
+          python - << 'PY'
+          import os, sys, json, datetime, urllib.request, base64
+
+          # --- Params ---
+          tz = "Europe/Paris"
+          today = datetime.date.today()
+          start = today - datetime.timedelta(days=364)
+          # WakaTime summaries: https://wakatime.com/developers  (voir "Summaries")
+          # On passe la clé en Basic Auth côté serveur (jamais dans le README)
+          api_key = os.environ["WAKATIME_API_KEY"]
+          auth = "Basic " + base64.b64encode(api_key.encode()).decode()
+          url = (
+              "https://api.wakatime.com/api/v1/users/current/summaries"
+              f"?start={start.isoformat()}&end={today.isoformat()}&timezone={tz}"
+          )
+          req = urllib.request.Request(url, headers={"Authorization": auth})
+          with urllib.request.urlopen(req, timeout=60) as resp:
+              data = json.loads(resp.read().decode())["data"]
+
+          # Map date -> total_seconds
+          totals = {d["range"]["date"]: d["grand_total"]["total_seconds"] for d in data}
+
+          # Palette simple (4 niveaux + 0)
+          def bucket(seconds):
+              if seconds == 0: return 0
+              if seconds < 1800: return 1       # < 30 min
+              if seconds < 7200: return 2       # < 2 h
+              if seconds < 14400: return 3      # < 4 h
+              return 4                           # >= 4 h
+
+          # Construire une grille "GitHub-like": colonnes = semaines, lignes = jours (Lundi->Dimanche)
+          # Trouver le lundi de la première semaine affichée
+          start_monday = start - datetime.timedelta(days=(start.weekday()))
+          end_sunday = today + datetime.timedelta(days=(6 - today.weekday()))
+          days = (end_sunday - start_monday).days + 1
+          weeks = days // 7
+
+          cell = 10         # taille case
+          gap = 2           # espacement
+          left, top = 30, 20
+          width = left + weeks*(cell+gap) + 10
+          height = top + 7*(cell+gap) + 30
+
+          # Couleurs (claires -> foncées). SVG ne supporte pas variables CSS ici, on met des hex.
+          COLORS = ["#ebedf0", "#c6e48b", "#7bc96f", "#239a3b", "#196127"]
+
+          rects = []
+          cur = start_monday
+          for w in range(weeks):
+              for d in range(7):
+                  date_str = cur.isoformat()
+                  s = totals.get(date_str, 0)
+                  b = bucket(s)
+                  x = left + w*(cell+gap)
+                  y = top + d*(cell+gap)
+                  rects.append(f'<rect x="{x}" y="{y}" width="{cell}" height="{cell}" rx="2" ry="2" fill="{COLORS[b]}"><title>{date_str} • {int(s//3600)}h{int((s%3600)//60):02d}</title></rect>')
+                  cur += datetime.timedelta(days=1)
+
+          # Légende
+          legend_x = left
+          legend_y = height - 15
+          legend = []
+          for i,c in enumerate(COLORS):
+              legend.append(f'<rect x="{legend_x + i*(cell+gap)}" y="{legend_y}" width="{cell}" height="{cell}" rx="2" ry="2" fill="{c}"/>')
+          legend.append(f'<text x="{legend_x + len(COLORS)*(cell+gap) + 6}" y="{legend_y+9}" font-size="10" fill="#555">Moins → Plus</text>')
+
+          svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+            <style>
+              text {{ font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif; }}
+            </style>
+            <text x="{left}" y="12" font-size="12" fill="#333">WakaTime • Activité quotidienne (derniers 365 jours, TZ {tz})</text>
+            {''.join(rects)}
+            {''.join(legend)}
+          </svg>'''
+          with open("wakatime_calendar.svg","w", encoding="utf-8") as f:
+              f.write(svg)
+          PY
+
+      - name: Commit & push SVG
+        run: |
+          if ! git diff --quiet -- wakatime_calendar.svg; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add wakatime_calendar.svg
+            git commit -m "chore: update WakaTime calendar SVG"
+            git push
+          else
+            echo "No changes in calendar"
+          fi
