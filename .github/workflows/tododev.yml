@@ -19,7 +19,7 @@ jobs:
         env:
           WAKATIME_API_KEY: ${{ secrets.WAKATIME_API_KEY }}
         run: |
-          python3 scripts/generate_wakatime_calendar.py --last-days 365 --timezone Europe/Paris --palette default --output wakatime_calendar.svg
+          python3 scripts/generate_wakatime_calendar.py --year 2025 --timezone Europe/Paris --palette green6 --output wakatime_calendar.svg
       - name: Commit & push
         run: |
           git config user.name "github-actions[bot]"
